@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    html, body {
+      margin: 0;
+      font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+      color: #1A1D21;
+    }
+    label {
+      display: block;
+      margin: 0 0 0.3rem;
+      font-size: 14px;
+    }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      height: 40px;
+      border: 1px solid #D5DCE3;
+      border-radius: 8px;
+      padding: 0 12px;
+      font-size: 16px;
+      background: white;
+    }
+    input:focus {
+      outline: 2px solid #054696;
+      border-color: #054696;
+    }
+    .hint {
+      margin: 0.35rem 0 0;
+      color: #505459;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    ul {
+      list-style: none;
+      margin: 0.4rem 0 0;
+      padding: 0.25rem;
+      border: 1px solid #D5DCE3;
+      border-radius: 8px;
+      background: white;
+      max-height: 240px;
+      overflow: auto;
+    }
+    li {
+      padding: 0.45rem 0.55rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1.35;
+    }
+    li.active, li:hover { background: #E6EBF0; }
+    .sym { font-weight: 700; color: #054696; }
+  </style>
+</head>
+<body>
+  <label id="label" for="query"></label>
+  <input id="query" autocomplete="off" spellcheck="false" placeholder="Name or ticker" />
+  <p id="hint" class="hint"></p>
+  <ul id="list" hidden></ul>
+  <script>
+    const input = document.getElementById("query");
+    const list = document.getElementById("list");
+    const hint = document.getElementById("hint");
+    const label = document.getElementById("label");
+    let timer = null;
+    let lastSent = null;
+    let results = [];
+    let active = 0;
+    let selectedSymbol = null;
+    let selectedName = "";
+    let opened = false;
+
+    function post(type, extra) {
+      window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, extra), "*");
+    }
+
+    function setHeight() {
+      const height = Math.ceil(document.body.getBoundingClientRect().height) + 2;
+      post("streamlit:setFrameHeight", { height: height });
+    }
+
+    function send(query, symbol, name, exchange) {
+      const payload = {
+        query: query,
+        symbol: symbol || null,
+        name: name || null,
+        exchange: exchange || null
+      };
+      const stamp = JSON.stringify(payload);
+      if (stamp === lastSent) return;
+      lastSent = stamp;
+      post("streamlit:setComponentValue", { value: payload, dataType: "json" });
+    }
+
+    function paint() {
+      list.innerHTML = "";
+      const query = input.value.trim();
+      if (selectedSymbol && query === selectedSymbol) {
+        list.hidden = true;
+        hint.textContent = selectedName || selectedSymbol;
+        setHeight();
+        return;
+      }
+      if (query.length < 2) {
+        list.hidden = true;
+        hint.textContent = "Type at least two letters.";
+        setHeight();
+        return;
+      }
+      if (!results.length) {
+        list.hidden = true;
+        hint.textContent = opened ? "No shares matched that search." : "Searching…";
+        setHeight();
+        return;
+      }
+      hint.textContent = "Select a share.";
+      list.hidden = false;
+      results.forEach(function (item, index) {
+        const row = document.createElement("li");
+        row.className = index === active ? "active" : "";
+        const symbol = document.createElement("span");
+        symbol.className = "sym";
+        symbol.textContent = item.symbol;
+        row.appendChild(symbol);
+        const rest = document.createElement("span");
+        const exchange = item.exchange ? " · " + item.exchange : "";
+        rest.textContent = " · " + (item.name || item.symbol) + exchange;
+        row.appendChild(rest);
+        row.addEventListener("mousedown", function (event) {
+          event.preventDefault();
+          choose(index);
+        });
+        list.appendChild(row);
+      });
+      setHeight();
+    }
+
+    function choose(index) {
+      const item = results[index];
+      if (!item) return;
+      selectedSymbol = item.symbol;
+      selectedName = item.name || item.symbol;
+      input.value = item.symbol;
+      list.hidden = true;
+      hint.textContent = item.name || item.symbol;
+      send(item.symbol, item.symbol, item.name || item.symbol, item.exchange || "");
+      setHeight();
+    }
+
+    input.addEventListener("input", function () {
+      const query = input.value.trim();
+      clearTimeout(timer);
+      opened = false;
+      if (selectedSymbol && query !== selectedSymbol) {
+        selectedSymbol = null;
+        selectedName = "";
+        opened = false;
+        results = [];
+        send(query, null, null, null);
+      }
+      timer = setTimeout(function () {
+        opened = false;
+        results = [];
+        send(query, null, null, null);
+        paint();
+      }, 220);
+      paint();
+    });
+
+    input.addEventListener("keydown", function (event) {
+      if (list.hidden || !results.length) return;
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        active = Math.min(results.length - 1, active + 1);
+        paint();
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        active = Math.max(0, active - 1);
+        paint();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        choose(active);
+      }
+    });
+
+    window.addEventListener("message", function (event) {
+      const data = event.data || {};
+      if (data.type !== "streamlit:render") return;
+      const args = data.args || {};
+      label.textContent = args.label || "Search";
+      if (!opened && document.activeElement !== input) {
+        const shown = args.query || "";
+        if (input.value !== shown) input.value = shown;
+      }
+      const incoming = Array.isArray(args.results) ? args.results : [];
+      const serverQuery = (args.query || "").trim();
+      const sameQuery = serverQuery === input.value.trim();
+      if (sameQuery && serverQuery.length >= 2) {
+        results = incoming;
+        opened = true;
+        active = Math.min(active, Math.max(incoming.length - 1, 0));
+      }
+      paint();
+    });
+
+    post("streamlit:componentReady", { apiVersion: 1 });
+    setHeight();
+  </script>
+</body>
+</html>
